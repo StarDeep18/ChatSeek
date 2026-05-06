@@ -84,12 +84,16 @@ async function extractMessages() {
 
     nodes.forEach((node, i) => {
         node.setAttribute("data-chatseek-id", i);
+        const text = node.innerText.slice(0, 300);
+        const lowerText = text.toLowerCase();
 
         messages.push({
-    id: i,
-    text: node.innerText.slice(0, 300),
-    embedding: null
-});
+            id: i,
+            text,
+            lowerText,
+            tokens: lowerText.split(/\s+/).filter(Boolean),
+            embedding: null
+        });
     });
 
     return messages;
