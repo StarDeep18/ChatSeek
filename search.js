@@ -241,9 +241,37 @@ function flattenChatsToMessages(chatRecords) {
     return flattened;
 }
 
+function mergeGlobalSources(storedMessages, currentMessages, currentChatContext) {
+    const merged = [];
+    const seen = new Set();
+
+    function pushUnique(message) {
+        const key = `${message.chatId || "unknown"}:${message.id}:${message.text || ""}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        merged.push(message);
+    }
+
+    storedMessages.forEach(pushUnique);
+
+    (currentMessages || []).forEach((message) => {
+        pushUnique({
+            ...message,
+            chatId: currentChatContext?.chatId || message.chatId || "current",
+            chatTitle: currentChatContext?.title || message.chatTitle || "Current chat",
+            chatUrl: currentChatContext?.url || message.chatUrl || "",
+            chatLastUpdated: currentChatContext?.lastUpdated || Date.now(),
+            timestamp: message.timestamp || Date.now()
+        });
+    });
+
+    return merged;
+}
+
 function semanticSearch(query, messages, options = {}) {
     if (options.mode === "allChats") {
-        const allMessages = flattenChatsToMessages(options.chatRecords || {});
+        const storedMessages = flattenChatsToMessages(options.chatRecords || {});
+        const allMessages = mergeGlobalSources(storedMessages, messages, options.currentChatContext);
         return semanticSearchCurrentChat(query, allMessages, {
             ...options,
             scope: "all"

@@ -93,7 +93,8 @@ function getSearchOptions() {
         mode,
         scope: mode === "allChats" ? "all" : scopeFilter.value,
         author: authorFilter.value,
-        chatRecords: allChatRecords
+        chatRecords: allChatRecords,
+        currentChatContext
     };
 }
 
