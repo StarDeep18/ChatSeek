@@ -1,4 +1,10 @@
 let sidebarOpen = false;
+let hasLoadedFullChat = false;
+let indexedMessages = [];
+let indexedNodeCount = 0;
+let activeConversationKey = "";
+const MAX_TEXT_LENGTH = 300;
+const CACHE_PREFIX = "chatseek-index:";
 
 document.addEventListener("keydown", (e) => {
     if (e.ctrlKey && e.shiftKey && e.key === "F") {
@@ -37,7 +43,7 @@ function toggleSidebar() {
 window.addEventListener("message", async (event) => {
 
     if (event.data.type === "GET_MESSAGES") {
-        const messages = await extractMessages();
+        const messages = await extractMessagesIncremental();
 
         const iframe = document.getElementById("chatseek-sidebar");
 
@@ -76,25 +82,98 @@ async function loadFullChat() {
     }
 }
 
-async function extractMessages() {
-    await loadFullChat();
+function getConversationKey() {
+    const path = window.location.pathname || "/";
+    return `${CACHE_PREFIX}${path}`;
+}
 
-    const nodes = document.querySelectorAll("[data-message-author-role]");
-    const messages = [];
+function toIndexedMessage(node, id) {
+    const text = node.innerText.slice(0, MAX_TEXT_LENGTH);
+    const lowerText = text.toLowerCase();
+    return {
+        id,
+        text,
+        lowerText,
+        tokens: lowerText.split(/\s+/).filter(Boolean),
+        author: node.getAttribute("data-message-author-role") || "unknown",
+        embedding: null
+    };
+}
 
-    nodes.forEach((node, i) => {
+async function readSessionCache(key) {
+    if (!chrome?.storage?.session) return null;
+    try {
+        const data = await chrome.storage.session.get(key);
+        return data[key] || null;
+    } catch (err) {
+        return null;
+    }
+}
+
+async function writeSessionCache(key, payload) {
+    if (!chrome?.storage?.session) return;
+    try {
+        await chrome.storage.session.set({ [key]: payload });
+    } catch (err) {
+        // Ignore storage errors to keep search functional.
+    }
+}
+
+async function ensureIndexedMessages() {
+    const conversationKey = getConversationKey();
+    const nodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
+
+    if (!hasLoadedFullChat) {
+        const cached = await readSessionCache(conversationKey);
+        if (cached && Array.isArray(cached.messages) && cached.nodeCount === nodes.length) {
+            indexedMessages = cached.messages;
+            indexedNodeCount = cached.nodeCount;
+            hasLoadedFullChat = true;
+            activeConversationKey = conversationKey;
+
+            indexedMessages.forEach((message, i) => {
+                const node = nodes[i];
+                if (node) node.setAttribute("data-chatseek-id", message.id);
+            });
+            return;
+        }
+
+        await loadFullChat();
+        hasLoadedFullChat = true;
+    }
+
+    const freshNodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
+
+    if (activeConversationKey !== conversationKey) {
+        indexedMessages = [];
+        indexedNodeCount = 0;
+        activeConversationKey = conversationKey;
+    }
+
+    if (freshNodes.length < indexedNodeCount) {
+        indexedMessages = [];
+        indexedNodeCount = 0;
+    }
+
+    for (let i = indexedNodeCount; i < freshNodes.length; i += 1) {
+        const node = freshNodes[i];
         node.setAttribute("data-chatseek-id", i);
-        const text = node.innerText.slice(0, 300);
-        const lowerText = text.toLowerCase();
+        indexedMessages.push(toIndexedMessage(node, i));
+    }
 
-        messages.push({
-            id: i,
-            text,
-            lowerText,
-            tokens: lowerText.split(/\s+/).filter(Boolean),
-            embedding: null
-        });
+    for (let i = 0; i < indexedNodeCount && i < freshNodes.length; i += 1) {
+        freshNodes[i].setAttribute("data-chatseek-id", i);
+    }
+
+    indexedNodeCount = freshNodes.length;
+
+    await writeSessionCache(conversationKey, {
+        nodeCount: indexedNodeCount,
+        messages: indexedMessages
     });
+}
 
-    return messages;
+async function extractMessagesIncremental() {
+    await ensureIndexedMessages();
+    return indexedMessages;
 }

@@ -3,7 +3,7 @@
   "name": "ChatSeek",
   "version": "1.0",
   "description": "Semantic search for ChatGPT conversations",
-  "permissions": ["activeTab", "scripting"],
+  "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": [
     "https://chat.openai.com/*",
     "https://chatgpt.com/*"

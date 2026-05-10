@@ -1,10 +1,11 @@
 const SEARCH_CONFIG = {
     debug: false,
     minQueryLength: 2,
+    debounceMs: 100,
     recentScopeLimit: 120,
     extendedScopeLimit: 300,
     zeroCandidateFallbackLimit: 30,
-    maxResults: 10,
+    maxResults: 60,
     weights: {
         exactPhrase: 5,
         startsWith: 3,
@@ -91,6 +92,22 @@ function getSearchScope(messages, limit) {
     return messages.slice(messages.length - limit);
 }
 
+function applyScopeAndAuthor(messages, options = {}) {
+    const scope = options.scope || "recent";
+    const author = options.author || "all";
+    let scoped = messages;
+
+    if (scope === "recent") {
+        scoped = getSearchScope(scoped, SEARCH_CONFIG.recentScopeLimit);
+    }
+
+    if (author !== "all") {
+        scoped = scoped.filter((message) => (message.author || "unknown") === author);
+    }
+
+    return scoped;
+}
+
 function preFilterCandidates(query, queryWords, sourceMessages) {
     const isShortQuery = query.length < 3;
 
@@ -110,18 +127,38 @@ function preFilterCandidates(query, queryWords, sourceMessages) {
     });
 }
 
-function rankMessages(query, candidates, maxResults) {
+function buildSnippet(text, queryWords) {
+    const normalized = (text || "").toLowerCase();
+    let matchIndex = -1;
+
+    queryWords.forEach((word) => {
+        if (matchIndex !== -1) return;
+        const idx = normalized.indexOf(word);
+        if (idx !== -1) matchIndex = idx;
+    });
+
+    if (matchIndex === -1) return text.slice(0, 180);
+
+    const start = Math.max(0, matchIndex - 45);
+    const end = Math.min(text.length, matchIndex + 135);
+    const prefix = start > 0 ? "..." : "";
+    const suffix = end < text.length ? "..." : "";
+    return `${prefix}${text.slice(start, end).trim()}${suffix}`;
+}
+
+function rankMessages(query, queryWords, candidates, maxResults) {
     return candidates
         .map((msg, idx) => ({
             ...msg,
-            score: scoreMatch(query, msg, idx)
+            score: scoreMatch(query, msg, idx),
+            snippet: buildSnippet(msg.text || "", queryWords)
         }))
         .filter(m => m.score > 0)
         .sort((a, b) => b.score - a.score)
         .slice(0, maxResults);
 }
 
-function semanticSearch(query, messages) {
+function semanticSearch(query, messages, options = {}) {
     const searchStart = nowMs();
     const normalizedQuery = query.toLowerCase();
     if (normalizedQuery.length < SEARCH_CONFIG.minQueryLength) {
@@ -133,7 +170,8 @@ function semanticSearch(query, messages) {
     }
 
     const queryWords = normalizedQuery.split(/\s+/).filter(Boolean);
-    const recentScope = getSearchScope(messages, SEARCH_CONFIG.recentScopeLimit);
+    const scopedMessages = applyScopeAndAuthor(messages, options);
+    const recentScope = getSearchScope(scopedMessages, SEARCH_CONFIG.recentScopeLimit);
 
     // Stage 1: fast candidate pass on recent messages
     const stage1Start = nowMs();
@@ -141,9 +179,9 @@ function semanticSearch(query, messages) {
     const stage1Ms = nowMs() - stage1Start;
 
     // Stage 2: broaden moderately, still not a full scan
-    if (candidates.length === 0 && messages.length > recentScope.length) {
+    if (candidates.length === 0 && scopedMessages.length > recentScope.length) {
         const stage2Start = nowMs();
-        const extendedScope = getSearchScope(messages, SEARCH_CONFIG.extendedScopeLimit);
+        const extendedScope = getSearchScope(scopedMessages, SEARCH_CONFIG.extendedScopeLimit);
         candidates = preFilterCandidates(normalizedQuery, queryWords, extendedScope);
         debugLog("stage-2-prefilter", {
             query: normalizedQuery,
@@ -154,21 +192,23 @@ function semanticSearch(query, messages) {
     }
 
     const rankStart = nowMs();
-    let results = rankMessages(normalizedQuery, candidates, SEARCH_CONFIG.maxResults);
+    let results = rankMessages(normalizedQuery, queryWords, candidates, SEARCH_CONFIG.maxResults);
     const rankMs = nowMs() - rankStart;
 
     // Fallback: small recent subset for snappy UX when no matches
     if (results.length === 0) {
-        const fallback = getSearchScope(messages, SEARCH_CONFIG.zeroCandidateFallbackLimit);
+        const fallback = getSearchScope(scopedMessages, SEARCH_CONFIG.zeroCandidateFallbackLimit);
         results = fallback.slice().reverse().slice(0, 5).map((msg) => ({
             ...msg,
-            score: 0
+            score: 0,
+            snippet: buildSnippet(msg.text || "", queryWords)
         }));
     }
 
     debugLog("search-metrics", {
         query: normalizedQuery,
         totalMessages: messages.length,
+        scopedMessages: scopedMessages.length,
         recentScope: recentScope.length,
         stage1Candidates: candidates.length,
         stage1Ms: +stage1Ms.toFixed(2),
