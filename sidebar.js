@@ -18,6 +18,39 @@ let searchToken = 0;
 let debounceTimer = null;
 let renderedCount = 0;
 
+function isExtensionContextAvailable() {
+    try {
+        return typeof chrome !== "undefined" && !!chrome.runtime && !!chrome.runtime.id;
+    } catch (err) {
+        return false;
+    }
+}
+
+function getStorageLocalSafe() {
+    try {
+        if (!isExtensionContextAvailable()) return null;
+        if (!chrome.storage || !chrome.storage.local) return null;
+        return chrome.storage.local;
+    } catch (err) {
+        return null;
+    }
+}
+
+function shouldSilenceExtensionError(err) {
+    const message = String(err?.message || err || "");
+    return message.includes("Extension context invalidated") || message.includes("Cannot read properties of undefined (reading 'getURL')");
+}
+
+window.addEventListener("error", (event) => {
+    if (!shouldSilenceExtensionError(event.error || event.message)) return;
+    event.preventDefault();
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+    if (!shouldSilenceExtensionError(event.reason)) return;
+    event.preventDefault();
+});
+
 window.parent.postMessage({
     type: "GET_MESSAGES"
 }, "*");
@@ -99,12 +132,13 @@ function getSearchOptions() {
 }
 
 async function loadChatRecords() {
-    if (!chrome?.storage?.local) {
+    const localStorageArea = getStorageLocalSafe();
+    if (!localStorageArea) {
         allChatRecords = {};
         return;
     }
     try {
-        const data = await chrome.storage.local.get(CHAT_INDEX_KEY);
+        const data = await localStorageArea.get(CHAT_INDEX_KEY);
         allChatRecords = data[CHAT_INDEX_KEY] || {};
     } catch (err) {
         allChatRecords = {};
@@ -221,8 +255,9 @@ async function openActiveResult() {
 
     if (shouldOpenNewTab) {
         if (!targetUrl) return;
-        if (chrome?.storage?.local) {
-            await chrome.storage.local.set({
+        const localStorageArea = getStorageLocalSafe();
+        if (localStorageArea) {
+            await localStorageArea.set({
                 [PENDING_JUMP_KEY]: {
                     chatId: resultChatId,
                     messageId: target.id,
@@ -301,24 +336,36 @@ results.addEventListener("click", (e) => {
 });
 
 window.addEventListener("message", async (event) => {
-    if (event.data.type === "MESSAGES") {
-        messages = event.data.messages;
-        currentChatContext = event.data.chatContext || currentChatContext;
-        await loadChatRecords();
-        if (!input.value.trim()) {
-            renderEmptyState("Start typing to search this conversation.");
-        } else {
-            scheduleSearch();
+    try {
+        if (event.data.type === "MESSAGES") {
+            messages = event.data.messages;
+            currentChatContext = event.data.chatContext || currentChatContext;
+            await loadChatRecords();
+            if (!input.value.trim()) {
+                renderEmptyState("Start typing to search this conversation.");
+            } else {
+                scheduleSearch();
+            }
+        }
+    } catch (err) {
+        if (!shouldSilenceExtensionError(err)) {
+            console.warn("[ChatSeek] Sidebar message error:", err);
         }
     }
 });
 
-if (chrome?.storage?.onChanged) {
+if (isExtensionContextAvailable() && chrome.storage && chrome.storage.onChanged) {
     chrome.storage.onChanged.addListener((changes, areaName) => {
-        if (areaName !== "local" || !changes[CHAT_INDEX_KEY]) return;
-        allChatRecords = changes[CHAT_INDEX_KEY].newValue || {};
-        if (searchMode.value === "allChats" && input.value.trim()) {
-            scheduleSearch();
+        try {
+            if (areaName !== "local" || !changes[CHAT_INDEX_KEY]) return;
+            allChatRecords = changes[CHAT_INDEX_KEY].newValue || {};
+            if (searchMode.value === "allChats" && input.value.trim()) {
+                scheduleSearch();
+            }
+        } catch (err) {
+            if (!shouldSilenceExtensionError(err)) {
+                console.warn("[ChatSeek] Storage change handler error:", err);
+            }
         }
     });
 }

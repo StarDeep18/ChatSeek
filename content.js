@@ -23,6 +23,41 @@ function isExtensionContextAvailable() {
     }
 }
 
+function getStorageLocalSafe() {
+    try {
+        if (!isExtensionContextAvailable()) return null;
+        if (!chrome.storage || !chrome.storage.local) return null;
+        return chrome.storage.local;
+    } catch (err) {
+        return null;
+    }
+}
+
+function shouldSilenceExtensionError(err) {
+    const message = String(err?.message || err || "");
+    return message.includes("Extension context invalidated") || message.includes("Cannot read properties of undefined (reading 'getURL')");
+}
+
+function getRuntimeUrlSafe(path) {
+    try {
+        if (!isExtensionContextAvailable()) return null;
+        if (typeof chrome.runtime.getURL !== "function") return null;
+        return chrome.runtime.getURL(path);
+    } catch (err) {
+        return null;
+    }
+}
+
+window.addEventListener("error", (event) => {
+    if (!shouldSilenceExtensionError(event.error || event.message)) return;
+    event.preventDefault();
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+    if (!shouldSilenceExtensionError(event.reason)) return;
+    event.preventDefault();
+});
+
 document.addEventListener("keydown", (e) => {
     if (!isExtensionContextAvailable()) return;
     if (e.ctrlKey && e.shiftKey && e.key === "F") {
@@ -31,24 +66,30 @@ document.addEventListener("keydown", (e) => {
 });
 
 function toggleSidebar() {
+    try {
     let existing = document.getElementById("chatseek-sidebar");
 
     if (existing) {
-        existing.remove();
+        try {
+            existing.remove();
+        } catch (err) {
+            // Ignore stale/invalidated node errors.
+        }
         sidebarOpen = false;
         return;
     }
 
     sidebarOpen = true;
 
-    if (!isExtensionContextAvailable() || typeof chrome.runtime.getURL !== "function") {
+    const sidebarUrl = getRuntimeUrlSafe("sidebar.html");
+    if (!sidebarUrl) {
         sidebarOpen = false;
         console.warn("[ChatSeek] Extension runtime unavailable. Reload the page after reloading the extension.");
         return;
     }
 
     const iframe = document.createElement("iframe");
-    iframe.src = chrome.runtime.getURL("sidebar.html");
+    iframe.src = sidebarUrl;
     iframe.id = "chatseek-sidebar";
 
     iframe.style.position = "fixed";
@@ -62,9 +103,16 @@ function toggleSidebar() {
     iframe.style.boxShadow = "0 0 24px rgba(0,0,0,0.25)";
 
     document.body.appendChild(iframe);
+    } catch (err) {
+        sidebarOpen = false;
+        if (!shouldSilenceExtensionError(err)) {
+            console.warn("[ChatSeek] Sidebar toggle failed:", err);
+        }
+    }
 }
 
 window.addEventListener("message", async (event) => {
+    try {
     if (!isExtensionContextAvailable()) return;
 
     if (event.data.type === "GET_MESSAGES") {
@@ -91,6 +139,11 @@ window.addEventListener("message", async (event) => {
 
             el.style.background = "rgba(255,255,0,0.3)";
             setTimeout(() => el.style.background = "", 1500);
+        }
+    }
+    } catch (err) {
+        if (!shouldSilenceExtensionError(err)) {
+            console.warn("[ChatSeek] Message handler error:", err);
         }
     }
 });
@@ -147,9 +200,10 @@ function toIndexedMessage(node, id) {
 }
 
 async function readChatIndex() {
-    if (!isExtensionContextAvailable() || !chrome?.storage?.local) return {};
+    const localStorageArea = getStorageLocalSafe();
+    if (!localStorageArea) return {};
     try {
-        const data = await chrome.storage.local.get(STORAGE_KEYS.chatIndex);
+        const data = await localStorageArea.get(STORAGE_KEYS.chatIndex);
         const records = data[STORAGE_KEYS.chatIndex];
         return records && typeof records === "object" ? records : {};
     } catch (err) {
@@ -174,10 +228,11 @@ function pruneChatIndex(records) {
 }
 
 async function writeChatIndex(records) {
-    if (!isExtensionContextAvailable() || !chrome?.storage?.local) return;
+    const localStorageArea = getStorageLocalSafe();
+    if (!localStorageArea) return;
     try {
         const compact = pruneChatIndex(records);
-        await chrome.storage.local.set({ [STORAGE_KEYS.chatIndex]: compact });
+        await localStorageArea.set({ [STORAGE_KEYS.chatIndex]: compact });
     } catch (err) {
         // Ignore storage errors to keep search functional.
     }
@@ -203,11 +258,12 @@ function needsFullRebuild(existingMessages, nodes) {
 }
 
 async function maybeHandlePendingJump() {
-    if (pendingJumpHandled || !isExtensionContextAvailable() || !chrome?.storage?.local) return;
+    const localStorageArea = getStorageLocalSafe();
+    if (pendingJumpHandled || !localStorageArea) return;
     pendingJumpHandled = true;
 
     try {
-        const data = await chrome.storage.local.get(STORAGE_KEYS.pendingJump);
+        const data = await localStorageArea.get(STORAGE_KEYS.pendingJump);
         const pending = data[STORAGE_KEYS.pendingJump];
         const chatId = getChatIdFromUrl();
         if (!pending || pending.chatId !== chatId) return;
@@ -221,7 +277,7 @@ async function maybeHandlePendingJump() {
             }, 1700);
         }
 
-        await chrome.storage.local.remove(STORAGE_KEYS.pendingJump);
+        await localStorageArea.remove(STORAGE_KEYS.pendingJump);
     } catch (err) {
         // Non-blocking.
     }
