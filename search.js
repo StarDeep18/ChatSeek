@@ -161,6 +161,7 @@ function rankMessages(query, queryWords, candidates, maxResults) {
 function semanticSearchCurrentChat(query, messages, options = {}) {
     const searchStart = nowMs();
     const normalizedQuery = query.toLowerCase();
+    const isGlobalMode = options.mode === "allChats";
     if (normalizedQuery.length < SEARCH_CONFIG.minQueryLength) {
         debugLog("skip-short-query", {
             query: normalizedQuery,
@@ -171,7 +172,9 @@ function semanticSearchCurrentChat(query, messages, options = {}) {
 
     const queryWords = normalizedQuery.split(/\s+/).filter(Boolean);
     const scopedMessages = applyScopeAndAuthor(messages, options);
-    const recentScope = getSearchScope(scopedMessages, SEARCH_CONFIG.recentScopeLimit);
+    const recentScope = isGlobalMode
+        ? scopedMessages
+        : getSearchScope(scopedMessages, SEARCH_CONFIG.recentScopeLimit);
 
     // Stage 1: fast candidate pass on recent messages
     const stage1Start = nowMs();
@@ -179,7 +182,7 @@ function semanticSearchCurrentChat(query, messages, options = {}) {
     const stage1Ms = nowMs() - stage1Start;
 
     // Stage 2: broaden moderately, still not a full scan
-    if (candidates.length === 0 && scopedMessages.length > recentScope.length) {
+    if (!isGlobalMode && candidates.length === 0 && scopedMessages.length > recentScope.length) {
         const stage2Start = nowMs();
         const extendedScope = getSearchScope(scopedMessages, SEARCH_CONFIG.extendedScopeLimit);
         candidates = preFilterCandidates(normalizedQuery, queryWords, extendedScope);
@@ -196,7 +199,7 @@ function semanticSearchCurrentChat(query, messages, options = {}) {
     const rankMs = nowMs() - rankStart;
 
     // Fallback: small recent subset for snappy UX when no matches
-    if (results.length === 0) {
+    if (results.length === 0 && !isGlobalMode) {
         const fallback = getSearchScope(scopedMessages, SEARCH_CONFIG.zeroCandidateFallbackLimit);
         results = fallback.slice().reverse().slice(0, 5).map((msg) => ({
             ...msg,
