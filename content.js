@@ -32,6 +32,12 @@ function toggleSidebar() {
 
     sidebarOpen = true;
 
+    if (!chrome?.runtime?.getURL) {
+        sidebarOpen = false;
+        console.warn("[ChatSeek] Extension runtime unavailable. Reload the page after reloading the extension.");
+        return;
+    }
+
     const iframe = document.createElement("iframe");
     iframe.src = chrome.runtime.getURL("sidebar.html");
     iframe.id = "chatseek-sidebar";
