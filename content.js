@@ -32,7 +32,7 @@ function toggleSidebar() {
 
     sidebarOpen = true;
 
-    if (!chrome?.runtime?.getURL) {
+    if (typeof chrome === "undefined" || !chrome.runtime || typeof chrome.runtime.getURL !== "function") {
         sidebarOpen = false;
         console.warn("[ChatSeek] Extension runtime unavailable. Reload the page after reloading the extension.");
         return;
