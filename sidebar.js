@@ -1,5 +1,9 @@
 let messages = [];
+let currentChatContext = { chatId: "", title: "", url: "" };
+let allChatRecords = {};
 const THEME_STORAGE_KEY = "chatseek-theme-mode";
+const CHAT_INDEX_KEY = "chatseek:chatIndex:v1";
+const PENDING_JUMP_KEY = "chatseek:pendingJump:v1";
 const THEME_MODES = ["auto", "light", "dark"];
 let currentThemeMode = localStorage.getItem(THEME_STORAGE_KEY) || "auto";
 const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
@@ -18,21 +22,11 @@ window.parent.postMessage({
     type: "GET_MESSAGES"
 }, "*");
 
-window.addEventListener("message", (event) => {
-    if (event.data.type === "MESSAGES") {
-        messages = event.data.messages;
-        if (!input.value.trim()) {
-            renderEmptyState("Start typing to search this conversation.");
-        } else {
-            scheduleSearch();
-        }
-    }
-});
-
 const input = document.getElementById("search");
 const results = document.getElementById("results");
 const resultCount = document.getElementById("result-count");
 const themeToggle = document.getElementById("theme-toggle");
+const searchMode = document.getElementById("search-mode");
 const scopeFilter = document.getElementById("scope-filter");
 const authorFilter = document.getElementById("author-filter");
 
@@ -94,10 +88,33 @@ function updateResultCount(count) {
 }
 
 function getSearchOptions() {
+    const mode = searchMode.value;
     return {
-        scope: scopeFilter.value,
-        author: authorFilter.value
+        mode,
+        scope: mode === "allChats" ? "all" : scopeFilter.value,
+        author: authorFilter.value,
+        chatRecords: allChatRecords
     };
+}
+
+async function loadChatRecords() {
+    if (!chrome?.storage?.local) {
+        allChatRecords = {};
+        return;
+    }
+    try {
+        const data = await chrome.storage.local.get(CHAT_INDEX_KEY);
+        allChatRecords = data[CHAT_INDEX_KEY] || {};
+    } catch (err) {
+        allChatRecords = {};
+    }
+}
+
+function formatResultMeta(result) {
+    const role = result.author || "unknown";
+    const score = Math.round((result.score || 0) * 10) / 10;
+    const timestamp = result.timestamp ? new Date(result.timestamp).toLocaleDateString() : "";
+    return `${role}${timestamp ? ` · ${timestamp}` : ""} · score ${score}`;
 }
 
 function renderResultBatch(start, end) {
@@ -107,7 +124,8 @@ function renderResultBatch(start, end) {
         return `
         <div class="result ${absoluteIdx === activeResultIndex ? "active" : ""}" data-index="${absoluteIdx}" data-id="${r.id}">
             <div class="result-snippet">${highlightText(r.snippet || r.text, latestQuery)}</div>
-            <div class="result-meta">${escapeHtml(r.author || "unknown")} · score ${Math.round((r.score || 0) * 10) / 10}</div>
+            <div class="result-meta">${escapeHtml(formatResultMeta(r))}</div>
+            <div class="result-chat">${escapeHtml(r.chatTitle || currentChatContext.title || "Current chat")}</div>
         </div>
     `;
     }).join("");
@@ -168,9 +186,25 @@ function updateActiveResult() {
     }
 }
 
-function openActiveResult() {
+async function openActiveResult() {
     const target = currentResults[activeResultIndex];
     if (!target) return;
+    const resultChatId = target.chatId || currentChatContext.chatId;
+    if (resultChatId && currentChatContext.chatId && resultChatId !== currentChatContext.chatId) {
+        const targetUrl = target.chatUrl || target.url;
+        if (!targetUrl) return;
+        if (chrome?.storage?.local) {
+            await chrome.storage.local.set({
+                [PENDING_JUMP_KEY]: {
+                    chatId: resultChatId,
+                    messageId: target.id,
+                    createdAt: Date.now()
+                }
+            }).catch(() => undefined);
+        }
+        window.open(targetUrl, "_blank", "noopener,noreferrer");
+        return;
+    }
     window.parent.postMessage({
         type: "SCROLL_TO",
         id: target.id
@@ -185,6 +219,15 @@ themeMedia.addEventListener("change", () => {
     if (currentThemeMode === "auto") {
         applyTheme("auto");
     }
+});
+
+searchMode.addEventListener("change", async () => {
+    const isAllChats = searchMode.value === "allChats";
+    scopeFilter.disabled = isAllChats;
+    if (isAllChats) {
+        await loadChatRecords();
+    }
+    scheduleSearch();
 });
 
 input.addEventListener("input", scheduleSearch);
@@ -204,7 +247,7 @@ input.addEventListener("keydown", (event) => {
         updateActiveResult();
     } else if (event.key === "Enter") {
         event.preventDefault();
-        openActiveResult();
+        void openActiveResult();
     } else if (event.key === "Escape") {
         input.value = "";
         currentResults = [];
@@ -226,5 +269,28 @@ results.addEventListener("click", (e) => {
     if (!target) return;
     activeResultIndex = Number(target.dataset.index || 0);
     updateActiveResult();
-    openActiveResult();
+    void openActiveResult();
 });
+
+window.addEventListener("message", async (event) => {
+    if (event.data.type === "MESSAGES") {
+        messages = event.data.messages;
+        currentChatContext = event.data.chatContext || currentChatContext;
+        await loadChatRecords();
+        if (!input.value.trim()) {
+            renderEmptyState("Start typing to search this conversation.");
+        } else {
+            scheduleSearch();
+        }
+    }
+});
+
+if (chrome?.storage?.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName !== "local" || !changes[CHAT_INDEX_KEY]) return;
+        allChatRecords = changes[CHAT_INDEX_KEY].newValue || {};
+        if (searchMode.value === "allChats" && input.value.trim()) {
+            scheduleSearch();
+        }
+    });
+}

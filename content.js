@@ -2,9 +2,18 @@ let sidebarOpen = false;
 let hasLoadedFullChat = false;
 let indexedMessages = [];
 let indexedNodeCount = 0;
-let activeConversationKey = "";
+let activeChatId = "";
+let activeChatTitle = "";
+let pendingJumpHandled = false;
 const MAX_TEXT_LENGTH = 300;
-const CACHE_PREFIX = "chatseek-index:";
+const STORAGE_KEYS = {
+    chatIndex: "chatseek:chatIndex:v1",
+    pendingJump: "chatseek:pendingJump:v1"
+};
+const INDEX_LIMITS = {
+    maxChats: 60,
+    maxMessagesPerChat: 800
+};
 
 document.addEventListener("keydown", (e) => {
     if (e.ctrlKey && e.shiftKey && e.key === "F") {
@@ -43,13 +52,15 @@ function toggleSidebar() {
 window.addEventListener("message", async (event) => {
 
     if (event.data.type === "GET_MESSAGES") {
-        const messages = await extractMessagesIncremental();
+        const { messages, chatContext } = await extractMessagesIncremental();
 
         const iframe = document.getElementById("chatseek-sidebar");
+        if (!iframe?.contentWindow) return;
 
         iframe.contentWindow.postMessage({
             type: "MESSAGES",
-            messages
+            messages,
+            chatContext
         }, "*");
     }
 
@@ -82,9 +93,27 @@ async function loadFullChat() {
     }
 }
 
-function getConversationKey() {
+function getChatIdFromUrl() {
     const path = window.location.pathname || "/";
-    return `${CACHE_PREFIX}${path}`;
+    const segments = path.split("/").filter(Boolean);
+    const cIndex = segments.indexOf("c");
+    if (cIndex !== -1 && segments[cIndex + 1]) {
+        return segments[cIndex + 1];
+    }
+    return path || "home";
+}
+
+function getChatTitle() {
+    const rawTitle = (document.title || "").replace(/\s*-\s*ChatGPT\s*$/i, "").trim();
+    return rawTitle || "Untitled Chat";
+}
+
+function getChatContext() {
+    return {
+        chatId: getChatIdFromUrl(),
+        title: getChatTitle(),
+        url: window.location.href
+    };
 }
 
 function toIndexedMessage(node, id) {
@@ -96,84 +125,141 @@ function toIndexedMessage(node, id) {
         lowerText,
         tokens: lowerText.split(/\s+/).filter(Boolean),
         author: node.getAttribute("data-message-author-role") || "unknown",
+        timestamp: Date.now(),
         embedding: null
     };
 }
 
-async function readSessionCache(key) {
-    if (!chrome?.storage?.session) return null;
+async function readChatIndex() {
+    if (!chrome?.storage?.local) return {};
     try {
-        const data = await chrome.storage.session.get(key);
-        return data[key] || null;
+        const data = await chrome.storage.local.get(STORAGE_KEYS.chatIndex);
+        const records = data[STORAGE_KEYS.chatIndex];
+        return records && typeof records === "object" ? records : {};
     } catch (err) {
-        return null;
+        return {};
     }
 }
 
-async function writeSessionCache(key, payload) {
-    if (!chrome?.storage?.session) return;
+function pruneChatIndex(records) {
+    const entries = Object.entries(records).sort((a, b) => {
+        const aUpdated = a[1]?.lastUpdated || 0;
+        const bUpdated = b[1]?.lastUpdated || 0;
+        return bUpdated - aUpdated;
+    });
+
+    const keptEntries = entries.slice(0, INDEX_LIMITS.maxChats).map(([chatId, record]) => {
+        const messages = Array.isArray(record.messages) ? record.messages : [];
+        const trimmedMessages = messages.slice(-INDEX_LIMITS.maxMessagesPerChat);
+        return [chatId, { ...record, messages: trimmedMessages }];
+    });
+
+    return Object.fromEntries(keptEntries);
+}
+
+async function writeChatIndex(records) {
+    if (!chrome?.storage?.local) return;
     try {
-        await chrome.storage.session.set({ [key]: payload });
+        const compact = pruneChatIndex(records);
+        await chrome.storage.local.set({ [STORAGE_KEYS.chatIndex]: compact });
     } catch (err) {
         // Ignore storage errors to keep search functional.
     }
 }
 
+function applyNodeIds(nodes) {
+    nodes.forEach((node, index) => {
+        node.setAttribute("data-chatseek-id", index);
+    });
+}
+
+function needsFullRebuild(existingMessages, nodes) {
+    if (!Array.isArray(existingMessages)) return true;
+    if (existingMessages.length > nodes.length) return true;
+    if (existingMessages.length === 0) return false;
+
+    const lastIndexed = existingMessages[existingMessages.length - 1];
+    const correspondingNode = nodes[existingMessages.length - 1];
+    if (!lastIndexed || !correspondingNode) return false;
+
+    const nodeText = correspondingNode.innerText.slice(0, MAX_TEXT_LENGTH);
+    return lastIndexed.text !== nodeText;
+}
+
+async function maybeHandlePendingJump() {
+    if (pendingJumpHandled || !chrome?.storage?.local) return;
+    pendingJumpHandled = true;
+
+    try {
+        const data = await chrome.storage.local.get(STORAGE_KEYS.pendingJump);
+        const pending = data[STORAGE_KEYS.pendingJump];
+        const chatId = getChatIdFromUrl();
+        if (!pending || pending.chatId !== chatId) return;
+
+        const target = document.querySelector(`[data-chatseek-id="${pending.messageId}"]`);
+        if (target) {
+            target.scrollIntoView({ behavior: "smooth", block: "center" });
+            target.style.background = "rgba(255,255,0,0.3)";
+            setTimeout(() => {
+                target.style.background = "";
+            }, 1700);
+        }
+
+        await chrome.storage.local.remove(STORAGE_KEYS.pendingJump);
+    } catch (err) {
+        // Non-blocking.
+    }
+}
+
 async function ensureIndexedMessages() {
-    const conversationKey = getConversationKey();
+    const chatContext = getChatContext();
+    const chatId = chatContext.chatId;
+    activeChatTitle = chatContext.title;
     const nodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
 
     if (!hasLoadedFullChat) {
-        const cached = await readSessionCache(conversationKey);
-        if (cached && Array.isArray(cached.messages) && cached.nodeCount === nodes.length) {
-            indexedMessages = cached.messages;
-            indexedNodeCount = cached.nodeCount;
-            hasLoadedFullChat = true;
-            activeConversationKey = conversationKey;
-
-            indexedMessages.forEach((message, i) => {
-                const node = nodes[i];
-                if (node) node.setAttribute("data-chatseek-id", message.id);
-            });
-            return;
-        }
-
         await loadFullChat();
         hasLoadedFullChat = true;
     }
 
     const freshNodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
+    applyNodeIds(freshNodes);
+    const index = await readChatIndex();
+    const existingRecord = index[chatId];
 
-    if (activeConversationKey !== conversationKey) {
-        indexedMessages = [];
-        indexedNodeCount = 0;
-        activeConversationKey = conversationKey;
+    if (activeChatId !== chatId) {
+        activeChatId = chatId;
+        indexedMessages = Array.isArray(existingRecord?.messages) ? existingRecord.messages : [];
+        indexedNodeCount = indexedMessages.length;
     }
 
-    if (freshNodes.length < indexedNodeCount) {
+    if (needsFullRebuild(indexedMessages, freshNodes)) {
         indexedMessages = [];
         indexedNodeCount = 0;
     }
 
     for (let i = indexedNodeCount; i < freshNodes.length; i += 1) {
         const node = freshNodes[i];
-        node.setAttribute("data-chatseek-id", i);
         indexedMessages.push(toIndexedMessage(node, i));
     }
 
-    for (let i = 0; i < indexedNodeCount && i < freshNodes.length; i += 1) {
-        freshNodes[i].setAttribute("data-chatseek-id", i);
-    }
-
     indexedNodeCount = freshNodes.length;
-
-    await writeSessionCache(conversationKey, {
-        nodeCount: indexedNodeCount,
+    index[chatId] = {
+        chatId,
+        title: activeChatTitle,
+        url: chatContext.url,
+        lastUpdated: Date.now(),
+        lastIndexedAt: Date.now(),
         messages: indexedMessages
-    });
+    };
+    await writeChatIndex(index);
+    await maybeHandlePendingJump();
 }
 
 async function extractMessagesIncremental() {
     await ensureIndexedMessages();
-    return indexedMessages;
+    return {
+        messages: indexedMessages,
+        chatContext: getChatContext()
+    };
 }

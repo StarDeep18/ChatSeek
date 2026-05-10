@@ -158,7 +158,7 @@ function rankMessages(query, queryWords, candidates, maxResults) {
         .slice(0, maxResults);
 }
 
-function semanticSearch(query, messages, options = {}) {
+function semanticSearchCurrentChat(query, messages, options = {}) {
     const searchStart = nowMs();
     const normalizedQuery = query.toLowerCase();
     if (normalizedQuery.length < SEARCH_CONFIG.minQueryLength) {
@@ -218,4 +218,33 @@ function semanticSearch(query, messages, options = {}) {
     });
 
     return results;
+}
+
+function flattenChatsToMessages(chatRecords) {
+    const flattened = [];
+    Object.values(chatRecords || {}).forEach((chat) => {
+        const messages = Array.isArray(chat.messages) ? chat.messages : [];
+        messages.forEach((message) => {
+            flattened.push({
+                ...message,
+                chatId: chat.chatId,
+                chatTitle: chat.title || "Untitled Chat",
+                chatUrl: chat.url || "",
+                chatLastUpdated: chat.lastUpdated || null,
+                timestamp: message.timestamp || chat.lastUpdated || null
+            });
+        });
+    });
+    return flattened;
+}
+
+function semanticSearch(query, messages, options = {}) {
+    if (options.mode === "allChats") {
+        const allMessages = flattenChatsToMessages(options.chatRecords || {});
+        return semanticSearchCurrentChat(query, allMessages, {
+            ...options,
+            scope: "all"
+        });
+    }
+    return semanticSearchCurrentChat(query, messages, options);
 }

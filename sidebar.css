@@ -118,7 +118,7 @@ body {
 
 .controls-row {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 8px;
     margin-top: 8px;
 }
@@ -215,6 +215,15 @@ body {
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.3px;
+}
+
+.result-chat {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .highlight {
