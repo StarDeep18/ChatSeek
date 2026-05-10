@@ -118,6 +118,29 @@ function formatResultMeta(result) {
     return `${role}${timestamp ? ` · ${timestamp}` : ""} · score ${score}`;
 }
 
+function normalizeUrl(url) {
+    if (!url) return "";
+    try {
+        const parsed = new URL(url);
+        return `${parsed.origin}${parsed.pathname}`;
+    } catch (err) {
+        return url;
+    }
+}
+
+function buildChatUrl(target) {
+    if (target.chatUrl || target.url) return target.chatUrl || target.url;
+    if (!target.chatId) return "";
+    const origin = (() => {
+        try {
+            return new URL(currentChatContext.url || window.location.href).origin;
+        } catch (err) {
+            return "https://chatgpt.com";
+        }
+    })();
+    return `${origin}/c/${target.chatId}`;
+}
+
 function renderResultBatch(start, end) {
     const batch = currentResults.slice(start, end);
     const html = batch.map((r, idx) => {
@@ -191,8 +214,12 @@ async function openActiveResult() {
     const target = currentResults[activeResultIndex];
     if (!target) return;
     const resultChatId = target.chatId || currentChatContext.chatId;
-    if (resultChatId && currentChatContext.chatId && resultChatId !== currentChatContext.chatId) {
-        const targetUrl = target.chatUrl || target.url;
+    const targetUrl = buildChatUrl(target);
+    const sameChatId = resultChatId && currentChatContext.chatId && resultChatId === currentChatContext.chatId;
+    const samePath = normalizeUrl(targetUrl) === normalizeUrl(currentChatContext.url || window.location.href);
+    const shouldOpenNewTab = searchMode.value === "allChats" && targetUrl && !(sameChatId || samePath);
+
+    if (shouldOpenNewTab) {
         if (!targetUrl) return;
         if (chrome?.storage?.local) {
             await chrome.storage.local.set({
