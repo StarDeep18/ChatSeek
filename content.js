@@ -28,8 +28,8 @@ function toggleSidebar() {
     iframe.style.height = "100%";
     iframe.style.zIndex = "999999";
     iframe.style.border = "none";
-    iframe.style.background = "white";
-    iframe.style.boxShadow = "0 0 10px rgba(0,0,0,0.3)";
+    iframe.style.background = "transparent";
+    iframe.style.boxShadow = "0 0 24px rgba(0,0,0,0.25)";
 
     document.body.appendChild(iframe);
 }

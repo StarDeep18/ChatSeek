@@ -1,4 +1,8 @@
 let messages = [];
+const THEME_STORAGE_KEY = "chatseek-theme-mode";
+const THEME_MODES = ["auto", "light", "dark"];
+let currentThemeMode = localStorage.getItem(THEME_STORAGE_KEY) || "auto";
+const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
 
 window.parent.postMessage({
     type: "GET_MESSAGES"
@@ -6,14 +10,39 @@ window.parent.postMessage({
 
 window.addEventListener("message", (event) => {
     if (event.data.type === "MESSAGES") {
-    messages = event.data.messages;
-
-}
+        messages = event.data.messages;
+        if (!input.value.trim()) {
+            renderEmptyState("Start typing to search this conversation.");
+        }
+    }
 });
 
 const input = document.getElementById("search");
 const results = document.getElementById("results");
 const resultCount = document.getElementById("result-count");
+const themeToggle = document.getElementById("theme-toggle");
+
+function applyTheme(mode) {
+    const root = document.documentElement;
+    if (mode === "auto") {
+        root.removeAttribute("data-theme");
+    } else {
+        root.dataset.theme = mode;
+    }
+    themeToggle.textContent = mode[0].toUpperCase() + mode.slice(1);
+}
+
+function setThemeMode(mode) {
+    currentThemeMode = mode;
+    localStorage.setItem(THEME_STORAGE_KEY, mode);
+    applyTheme(mode);
+}
+
+function cycleThemeMode() {
+    const currentIndex = THEME_MODES.indexOf(currentThemeMode);
+    const nextMode = THEME_MODES[(currentIndex + 1) % THEME_MODES.length];
+    setThemeMode(nextMode);
+}
 
 function escapeHtml(text) {
     return text
@@ -57,6 +86,14 @@ input.addEventListener("input", () => {
 });
 
 renderEmptyState("Loading conversation messages...");
+
+applyTheme(currentThemeMode);
+themeToggle.addEventListener("click", cycleThemeMode);
+themeMedia.addEventListener("change", () => {
+    if (currentThemeMode === "auto") {
+        applyTheme("auto");
+    }
+});
 
 results.addEventListener("click", (e) => {
     const target = e.target.closest(".result");
