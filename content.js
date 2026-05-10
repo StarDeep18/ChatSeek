@@ -15,7 +15,16 @@ const INDEX_LIMITS = {
     maxMessagesPerChat: 800
 };
 
+function isExtensionContextAvailable() {
+    try {
+        return typeof chrome !== "undefined" && !!chrome.runtime && !!chrome.runtime.id;
+    } catch (err) {
+        return false;
+    }
+}
+
 document.addEventListener("keydown", (e) => {
+    if (!isExtensionContextAvailable()) return;
     if (e.ctrlKey && e.shiftKey && e.key === "F") {
         toggleSidebar();
     }
@@ -32,7 +41,7 @@ function toggleSidebar() {
 
     sidebarOpen = true;
 
-    if (typeof chrome === "undefined" || !chrome.runtime || typeof chrome.runtime.getURL !== "function") {
+    if (!isExtensionContextAvailable() || typeof chrome.runtime.getURL !== "function") {
         sidebarOpen = false;
         console.warn("[ChatSeek] Extension runtime unavailable. Reload the page after reloading the extension.");
         return;
@@ -56,6 +65,7 @@ function toggleSidebar() {
 }
 
 window.addEventListener("message", async (event) => {
+    if (!isExtensionContextAvailable()) return;
 
     if (event.data.type === "GET_MESSAGES") {
         const { messages, chatContext } = await extractMessagesIncremental();
@@ -137,7 +147,7 @@ function toIndexedMessage(node, id) {
 }
 
 async function readChatIndex() {
-    if (!chrome?.storage?.local) return {};
+    if (!isExtensionContextAvailable() || !chrome?.storage?.local) return {};
     try {
         const data = await chrome.storage.local.get(STORAGE_KEYS.chatIndex);
         const records = data[STORAGE_KEYS.chatIndex];
@@ -164,7 +174,7 @@ function pruneChatIndex(records) {
 }
 
 async function writeChatIndex(records) {
-    if (!chrome?.storage?.local) return;
+    if (!isExtensionContextAvailable() || !chrome?.storage?.local) return;
     try {
         const compact = pruneChatIndex(records);
         await chrome.storage.local.set({ [STORAGE_KEYS.chatIndex]: compact });
@@ -193,7 +203,7 @@ function needsFullRebuild(existingMessages, nodes) {
 }
 
 async function maybeHandlePendingJump() {
-    if (pendingJumpHandled || !chrome?.storage?.local) return;
+    if (pendingJumpHandled || !isExtensionContextAvailable() || !chrome?.storage?.local) return;
     pendingJumpHandled = true;
 
     try {
@@ -218,6 +228,11 @@ async function maybeHandlePendingJump() {
 }
 
 async function ensureIndexedMessages() {
+    if (!isExtensionContextAvailable()) {
+        indexedMessages = [];
+        indexedNodeCount = 0;
+        return;
+    }
     const chatContext = getChatContext();
     const chatId = chatContext.chatId;
     activeChatTitle = chatContext.title;
